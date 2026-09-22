@@ -1,39 +1,54 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [ $(id -u) -ne 0 ]
-then
-    echo "this script must be executed as root"
+if [[ $EUID -eq 0 ]]; then
+    echo "Do not run this script with sudo." >&2
+    echo "Run it as your normal user: $0" >&2
     exit 1
 fi
 
-USER_HOME=$(eval echo ~${SUDO_USER})
-UBUNTU_RELEASE=$(lsb_release -sc 2>/dev/null)
-WINE_INSTALL=$(dirname $(realpath /usr/bin/wine))/..
-WINEPREFIX=${WINEPREFIX:=$USER_HOME/.wine}
+if ! sudo -v; then
+    echo "This script requires sudo privileges." >&2
+    exit 1
+fi
 
-# add winehq PPA
-dpkg --add-architecture i386
-mkdir -pm755 /etc/apt/keyrings
-wget -qO /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key
-wget -qO /etc/apt/sources.list.d/winehq-${UBUNTU_RELEASE}.sources https://dl.winehq.org/wine-builds/ubuntu/dists/${UBUNTU_RELEASE}/winehq-${UBUNTU_RELEASE}.sources
-apt update -q
-apt install pipewire-jack winehq-stable wine-stable-dev winetricks -y
+# check if we need to install the WineHQ PPA
+WINE_VERSION=$(apt-cache policy wine | awk '/Candidate:/ {print $2}')
+if dpkg --compare-versions "$WINE_VERSION" lt "10"; then
+    echo -e "\033[33mInsufficient wine version available, installing PPA\033[0m"
+    UBUNTU_RELEASE=$(lsb_release -sc 2>/dev/null)
+    sudo mkdir -pm755 /etc/apt/keyrings
+    sudo wget -qO /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key
+    sudo wget -qO /etc/apt/sources.list.d/winehq-${UBUNTU_RELEASE}.sources https://dl.winehq.org/wine-builds/ubuntu/dists/${UBUNTU_RELEASE}/winehq-${UBUNTU_RELEASE}.sources
+    WINE_PKGS="winehq-stable wine-stable-dev"
+else
+    WINE_PKGS="libwine-dev wine wine64-tools"
+fi
 
-WINEASIO=$(mktemp -u)
-trap 'rm -rf "$WINEASIO"' EXIT
+# check if we need to install the PipeWire PPA
+LIBPIPEWIRE_VERSION=$(apt-cache policy libpipewire-0.3-dev | awk '/Candidate:/ {print $2}')
+if dpkg --compare-versions "$LIBPIPEWIRE_VERSION" lt "1.4.2"; then
+    echo -e "\033[33mInsufficient libpipewire version available, installing PPA\033[0m"
+    sudo add-apt-repository ppa:savoury1/pipewire -y
+fi
 
-# build wineasio
-sudo -u $SUDO_USER git clone -q git@github.com:wineasio/wineasio.git $WINEASIO
-sudo -u $SUDO_USER make -C $WINEASIO 64
+# install dependencies
+sudo dpkg --add-architecture i386
+sudo apt update -q
+sudo apt install -yq build-essential cmake g++-mingw-w64-x86-64 gcc-mingw-w64-x86-64 git libarchive-dev libpipewire-0.3-dev libwine-dev libyaml-cpp-dev ninja-build pkg-config qt6-base-dev $WINE_PKGS winetricks zlib1g-dev
 
-# configure wine
-sudo -u $SUDO_USER WINEDEBUG=-all wineboot -u
-sudo -u $SUDO_USER winetricks -q dxvk
+PIPEASIO=$(mktemp -d)
+trap 'rm -rf "$PIPEASIO"' EXIT
 
-cp $WINEASIO/build64/wineasio64.dll $WINE_INSTALL/lib/wine/x86_64-unix/
-cp $WINEASIO/build64/wineasio64.dll.so $WINE_INSTALL/lib/wine/x86_64-windows/
-sudo -u $SUDO_USER cp $WINEASIO/build64/wineasio64.dll.so $WINEPREFIX/drive_c/windows/system32/wineasio64.dll
-sudo -u $SUDO_USER regsvr32 /s $WINEASIO/build64/wineasio64.dll.so
+# install PipeASIO
+git clone https://github.com/M0n7y5/pipeasio.git --depth 1 --single-branch $PIPEASIO
+cmake -S $PIPEASIO -B $PIPEASIO/build -DPIPEASIO_WINE_INSTALL_ROOT=$(dirname $(realpath $(which wine)))/../lib/wine
+cmake --build $PIPEASIO/build
+sudo cmake --install $PIPEASIO/build --prefix /usr
+
+# configure Wine
+WINEDEBUG=-all wineboot -u
+$PIPEASIO/pipeasio-register
+winetricks -q dxvk
 
 echo -e "\033[0;32mWine is ready to go!\033[0m"
