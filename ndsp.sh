@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -euox pipefail
 
 if [[ $EUID -eq 0 ]]; then
     echo "Do not run this script with sudo." >&2
@@ -35,7 +35,7 @@ fi
 # install dependencies
 sudo dpkg --add-architecture i386
 sudo apt update -q
-sudo apt install -yq build-essential cmake g++-mingw-w64-x86-64 gcc-mingw-w64-x86-64 git libarchive-dev libpipewire-0.3-dev libwine-dev libyaml-cpp-dev ninja-build pkg-config qt6-base-dev $WINE_PKGS winetricks zlib1g-dev
+sudo apt install -y build-essential cmake g++-mingw-w64-x86-64 gcc-mingw-w64-x86-64 git libarchive-dev libpipewire-0.3-dev libwine-dev libyaml-cpp-dev ninja-build pkg-config qt6-base-dev $WINE_PKGS winetricks zlib1g-dev
 
 PIPEASIO=$(mktemp -d)
 trap 'rm -rf "$PIPEASIO"' EXIT
@@ -46,7 +46,17 @@ cmake -S $PIPEASIO -B $PIPEASIO/build -DPIPEASIO_WINE_INSTALL_ROOT=$(dirname $(r
 cmake --build $PIPEASIO/build
 sudo cmake --install $PIPEASIO/build --prefix /usr
 
+# add to pipewire group to allow RT scheduling
+sudo groupadd -r pipewire
+sudo usermod -aG pipewire $USER
+
 # configure Wine
+# some distributions of wine do not put wineserver on PATH, which is needed for winetricks
+if ! command -v wineserver >/dev/null 2>&1 && [ -z "${WINESERVER:-}" ]; then
+    for ws in /usr/lib/*-linux-gnu*/wine/wineserver* /usr/lib/wine/wineserver*; do
+        [ -x "$ws" ] && { export WINESERVER=$ws; break; }
+    done
+fi
 WINEDEBUG=-all wineboot -u
 $PIPEASIO/pipeasio-register
 winetricks -q dxvk
